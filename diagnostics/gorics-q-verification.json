@@ -1,0 +1,58 @@
+{
+  "success": false,
+  "state": "failed",
+  "run_id": "28912908076",
+  "version": "q",
+  "architecture": "i386",
+  "desktop": "openbox-tint2-pcmanfm-xterm",
+  "mode": "legacy-pages-external-chunks-direct-kernel",
+  "base_url": "https://gorics.github.io/website/os/real-multiboot/",
+  "started_at": "2026-07-08T02:24:18.083Z",
+  "edge_attempts": [
+    {
+      "attempt": 1,
+      "url": "https://gorics.github.io/website/os/real-multiboot/?external-q=28912908076-1-1783477458339",
+      "ready": true,
+      "page_log": [
+        "[ready] GORICS Linux GUI ISO page. q",
+        "[2026-07-08T02:24:18.586Z] ready: legacy Pages chunked i386 Openbox loader installed"
+      ],
+      "script": "https://gorics.github.io/website/os/real-multiboot/app.js?v=q",
+      "meta_status": 200,
+      "meta_name": "gorics-linux-gui-web-i386.iso",
+      "meta_version": "q",
+      "meta_chunk_source": "raw-github-os-assets-branch"
+    }
+  ],
+  "console": [
+    "log: [GORICS ISO] ready: legacy Pages chunked i386 Openbox loader installed"
+  ],
+  "failed_requests": [],
+  "updated_at": "2026-07-08T02:26:18.777Z",
+  "last_edge_probe": {
+    "attempt": 1,
+    "url": "https://gorics.github.io/website/os/real-multiboot/?external-q=28912908076-1-1783477458339",
+    "ready": true,
+    "page_log": [
+      "[ready] GORICS Linux GUI ISO page. q",
+      "[2026-07-08T02:24:18.586Z] ready: legacy Pages chunked i386 Openbox loader installed"
+    ],
+    "script": "https://gorics.github.io/website/os/real-multiboot/app.js?v=q",
+    "meta_status": 200,
+    "meta_name": "gorics-linux-gui-web-i386.iso",
+    "meta_version": "q",
+    "meta_chunk_source": "raw-github-os-assets-branch"
+  },
+  "verified_url": "https://gorics.github.io/website/os/real-multiboot/?external-q=28912908076-1-1783477458339",
+  "canvas_width": 0,
+  "canvas_height": 0,
+  "canvas_display": "missing",
+  "text_display": "missing",
+  "page_url": "https://gorics.github.io/website/os/real-multiboot/?external-q=28912908076-1-1783477458339",
+  "log_tail": [
+    "[ready] GORICS Linux GUI ISO page. q",
+    "[2026-07-08T02:24:18.586Z] ready: legacy Pages chunked i386 Openbox loader installed"
+  ],
+  "error": "page.waitForFunction: Timeout 120000ms exceeded.\n    at /home/runner/work/alongmask/alongmask/verify-gorics-q.mjs:100:14",
+  "completed_at": "2026-07-08T02:26:18.777Z"
+}
