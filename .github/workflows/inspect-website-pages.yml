@@ -1,0 +1,64 @@
+name: Inspect Website Pages
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/inspect-website-pages.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Inspect gorics website without mutating it
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p diagnostics
+          gh api 'repos/gorics/website/actions/workflows/pages-build-deployment/runs?per_page=20' > /tmp/legacy-runs.json
+          gh api 'repos/gorics/website/actions/workflows/static.yml/runs?per_page=20' > /tmp/static-runs.json
+          gh api 'repos/gorics/website/pages' > /tmp/pages.json
+          gh api 'repos/gorics/website/pages/builds/latest' > /tmp/latest-build.json || true
+          curl -fsSL --max-time 60 'https://gorics.github.io/website/os/real-multiboot/?external-inspector=1' -o /tmp/public-index.html || true
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          def load(path):
+              p = Path(path)
+              try:
+                  return json.loads(p.read_text())
+              except Exception:
+                  return {'raw': p.read_text(errors='replace') if p.exists() else ''}
+          legacy = load('/tmp/legacy-runs.json')
+          static = load('/tmp/static-runs.json')
+          public = Path('/tmp/public-index.html').read_text(errors='replace') if Path('/tmp/public-index.html').exists() else ''
+          result = {
+              'legacy_runs': [
+                  {k: run.get(k) for k in ('id','head_sha','status','conclusion','event','created_at','updated_at','html_url')}
+                  for run in legacy.get('workflow_runs', [])
+              ],
+              'static_runs': [
+                  {k: run.get(k) for k in ('id','head_sha','status','conclusion','event','created_at','updated_at','html_url')}
+                  for run in static.get('workflow_runs', [])
+              ],
+              'pages': load('/tmp/pages.json'),
+              'latest_build': load('/tmp/latest-build.json'),
+              'public_page_q': 'ISO page. q' in public,
+              'public_page_n': 'ISO page. n' in public,
+              'public_page_p': 'ISO page. p' in public,
+              'public_excerpt': public[-1000:],
+          }
+          Path('diagnostics/website-pages.json').write_text(json.dumps(result, indent=2) + '\n')
+          print(json.dumps(result, indent=2))
+          PY
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add diagnostics/website-pages.json
+          git commit -m 'Record Website Pages status' || true
+          git push
