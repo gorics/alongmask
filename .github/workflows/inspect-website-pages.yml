@@ -9,56 +9,249 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: external-gorics-q-gui-verifier
+  cancel-in-progress: true
+
 jobs:
-  inspect:
+  verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Inspect gorics website without mutating it
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install Chromium verifier
+        run: |
+          npm install --no-save playwright@1.55.0
+          npx playwright install --with-deps chromium
+
+      - name: Boot public GORICS q deployment
+        id: browser
+        continue-on-error: true
         env:
-          GH_TOKEN: ${{ github.token }}
+          BASE_URL: https://gorics.github.io/website/os/real-multiboot/
         run: |
           mkdir -p diagnostics
-          gh api 'repos/gorics/website/actions/workflows/pages-build-deployment/runs?per_page=20' > /tmp/legacy-runs.json
-          gh api 'repos/gorics/website/actions/workflows/static.yml/runs?per_page=20' > /tmp/static-runs.json
-          gh api 'repos/gorics/website/pages' > /tmp/pages.json
-          gh api 'repos/gorics/website/pages/builds/latest' > /tmp/latest-build.json || true
-          curl -fsSL --max-time 60 'https://gorics.github.io/website/os/real-multiboot/?external-inspector=1' -o /tmp/public-index.html || true
+          cat > verify-gorics-q.mjs <<'JS'
+          import { chromium } from 'playwright';
+          import fs from 'node:fs';
+
+          const output = 'diagnostics/gorics-q-verification.json';
+          const screenshot = 'diagnostics/gorics-q-proof.png';
+          const result = {
+            success: false,
+            state: 'starting',
+            run_id: process.env.GITHUB_RUN_ID,
+            version: 'q',
+            architecture: 'i386',
+            desktop: 'openbox-tint2-pcmanfm-xterm',
+            mode: 'legacy-pages-external-chunks-direct-kernel',
+            base_url: process.env.BASE_URL,
+            started_at: new Date().toISOString(),
+            edge_attempts: [],
+            console: [],
+            failed_requests: [],
+          };
+          const save = (state, extra = {}) => {
+            Object.assign(result, extra, { state, updated_at: new Date().toISOString() });
+            fs.writeFileSync(output, JSON.stringify(result, null, 2) + '\n');
+          };
+          const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+          save('starting');
+
+          let browser;
+          let page;
+          try {
+            browser = await chromium.launch({
+              headless: true,
+              args: ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
+            });
+            const context = await browser.newContext({
+              viewport: { width: 1280, height: 900 },
+              userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 GORICS-Q-Verifier Chrome/149 Safari/537.36',
+            });
+            page = await context.newPage();
+            page.setDefaultTimeout(120000);
+            page.on('console', message => {
+              result.console.push(`${message.type()}: ${message.text()}`);
+              if (result.console.length > 500) result.console.shift();
+            });
+            page.on('pageerror', error => result.console.push(`pageerror: ${error.message}`));
+            page.on('requestfailed', request => result.failed_requests.push({
+              url: request.url(),
+              error: request.failure()?.errorText || 'unknown',
+            }));
+            page.on('crash', () => save('page-crashed'));
+
+            save('waiting-for-q-edge');
+            let ready = false;
+            for (let attempt = 1; attempt <= 90; attempt += 1) {
+              const url = new URL(process.env.BASE_URL);
+              url.searchParams.set('external-q', `${process.env.GITHUB_RUN_ID}-${attempt}-${Date.now()}`);
+              const probe = { attempt, url: url.href, ready: false };
+              try {
+                await page.goto(url.href, { waitUntil: 'domcontentloaded', timeout: 90000 });
+                Object.assign(probe, await page.evaluate(async () => {
+                  const log = document.querySelector('#log')?.textContent || '';
+                  const script = [...document.scripts].map(item => item.src).find(src => src.includes('/app.js')) || '';
+                  let meta = null;
+                  let metaStatus = 0;
+                  try {
+                    const response = await fetch(`./assets/iso-meta.json?external-q=${Date.now()}`, { cache: 'no-store' });
+                    metaStatus = response.status;
+                    if (response.ok) meta = await response.json();
+                  } catch {}
+                  return {
+                    ready: log.includes('ISO page. q')
+                      && script.includes('app.js?v=q')
+                      && metaStatus === 200
+                      && meta?.name === 'gorics-linux-gui-web-i386.iso'
+                      && meta?.architecture === 'i386'
+                      && meta?.direct_boot === true
+                      && meta?.chunked === true
+                      && meta?.page_version === 'q',
+                    page_log: log.split('\n').slice(0, 4),
+                    script,
+                    meta_status: metaStatus,
+                    meta_name: meta?.name || null,
+                    meta_version: meta?.page_version || null,
+                    meta_chunk_source: meta?.chunk_source || null,
+                  };
+                }));
+              } catch (error) {
+                probe.error = error?.message || String(error);
+              }
+              result.edge_attempts.push(probe);
+              save('waiting-for-q-edge', { last_edge_probe: probe });
+              if (probe.ready) {
+                ready = true;
+                result.verified_url = url.href;
+                break;
+              }
+              await sleep(10000);
+            }
+            if (!ready) throw new Error('public q deployment did not reach Chromium edge');
+
+            await page.waitForFunction(() => {
+              const log = document.querySelector('#log')?.textContent || '';
+              return log.includes('Legacy Pages external-chunk loader q');
+            });
+            save('q-loader-ready');
+            await page.click('#boot-btn');
+            save('boot-clicked');
+
+            await page.waitForFunction(() => document.querySelector('#log')?.textContent.includes('ISO size='), null, { timeout: 180000 });
+            save('metadata-loaded');
+            await page.waitForFunction(() => document.querySelector('#log')?.textContent.includes('ISO9660 and El Torito verified'), null, { timeout: 300000 });
+            save('external-chunk-verified');
+            await page.waitForFunction(() => {
+              const log = document.querySelector('#log')?.textContent || '';
+              return log.includes('kernel available') && log.includes('initrd available') && log.includes('runtime available') && log.includes('wasm available');
+            }, null, { timeout: 300000 });
+            save('boot-files-verified');
+            await page.waitForFunction(() => document.querySelector('#log')?.textContent.includes('emulator-started'), null, { timeout: 600000 });
+            save('emulator-started');
+            await page.waitForFunction(() => {
+              const canvas = document.querySelector('#screen canvas');
+              const text = document.querySelector('#screen > div');
+              return canvas
+                && canvas.width >= 640
+                && canvas.height >= 480
+                && getComputedStyle(canvas).display !== 'none'
+                && (!text || getComputedStyle(text).display === 'none');
+            }, null, { timeout: 900000 });
+            save('graphical-desktop-visible');
+            await page.waitForTimeout(30000);
+
+            const details = await page.evaluate(() => {
+              const canvas = document.querySelector('#screen canvas');
+              const text = document.querySelector('#screen > div');
+              const log = document.querySelector('#log')?.textContent || '';
+              const keyboard = document.querySelector('#keyboard-btn');
+              return {
+                canvas_width: canvas?.width || 0,
+                canvas_height: canvas?.height || 0,
+                canvas_display: canvas ? getComputedStyle(canvas).display : 'missing',
+                text_display: text ? getComputedStyle(text).display : 'missing',
+                screen_active: document.querySelector('#screen')?.classList.contains('active') || false,
+                boot_button_text: document.querySelector('#boot-btn')?.textContent || '',
+                stop_button_disabled: document.querySelector('#stop-btn')?.disabled ?? null,
+                keyboard_button_present: Boolean(keyboard),
+                keyboard_button_disabled: keyboard?.disabled ?? null,
+                emulator_object_present: Boolean(window.goricsRealLinuxIso),
+                log_tail: log.split('\n').slice(-320),
+              };
+            });
+            await page.screenshot({ path: screenshot, fullPage: true });
+            const success = details.canvas_width >= 640
+              && details.canvas_height >= 480
+              && details.canvas_display !== 'none'
+              && details.text_display === 'none'
+              && details.boot_button_text === 'Running'
+              && details.stop_button_disabled === false
+              && details.keyboard_button_present
+              && details.keyboard_button_disabled === false
+              && details.emulator_object_present;
+            save('completed', { ...details, success, completed_at: new Date().toISOString() });
+          } catch (error) {
+            let details = {};
+            try {
+              details = await page?.evaluate(() => {
+                const canvas = document.querySelector('#screen canvas');
+                const text = document.querySelector('#screen > div');
+                const log = document.querySelector('#log')?.textContent || '';
+                return {
+                  canvas_width: canvas?.width || 0,
+                  canvas_height: canvas?.height || 0,
+                  canvas_display: canvas ? getComputedStyle(canvas).display : 'missing',
+                  text_display: text ? getComputedStyle(text).display : 'missing',
+                  page_url: location.href,
+                  log_tail: log.split('\n').slice(-360),
+                };
+              }) || {};
+              await page?.screenshot({ path: screenshot, fullPage: true });
+            } catch {}
+            save('failed', {
+              ...details,
+              success: false,
+              error: error?.stack || String(error),
+              completed_at: new Date().toISOString(),
+            });
+          } finally {
+            await browser?.close().catch(() => {});
+          }
+          if (!result.success) process.exit(1);
+          JS
+          node --check verify-gorics-q.mjs
+          set -o pipefail
+          timeout --signal=TERM --kill-after=30s 28m node verify-gorics-q.mjs 2>&1 | tee diagnostics/gorics-q-browser.log
+
+      - name: Commit verification evidence
+        if: always()
+        run: |
+          if test ! -s diagnostics/gorics-q-verification.json; then
+            printf '{"success":false,"state":"no-result","run_id":"%s"}\n' "$GITHUB_RUN_ID" > diagnostics/gorics-q-verification.json
+          fi
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add diagnostics/gorics-q-verification.json diagnostics/gorics-q-browser.log diagnostics/gorics-q-proof.png 2>/dev/null || true
+          git commit -m 'Record external GORICS q GUI verification' || true
+          git push
+
+      - name: Require GUI success
+        if: always()
+        run: |
           python3 - <<'PY'
           import json
           from pathlib import Path
-          def load(path):
-              p = Path(path)
-              try:
-                  return json.loads(p.read_text())
-              except Exception:
-                  return {'raw': p.read_text(errors='replace') if p.exists() else ''}
-          legacy = load('/tmp/legacy-runs.json')
-          static = load('/tmp/static-runs.json')
-          public = Path('/tmp/public-index.html').read_text(errors='replace') if Path('/tmp/public-index.html').exists() else ''
-          result = {
-              'legacy_runs': [
-                  {k: run.get(k) for k in ('id','head_sha','status','conclusion','event','created_at','updated_at','html_url')}
-                  for run in legacy.get('workflow_runs', [])
-              ],
-              'static_runs': [
-                  {k: run.get(k) for k in ('id','head_sha','status','conclusion','event','created_at','updated_at','html_url')}
-                  for run in static.get('workflow_runs', [])
-              ],
-              'pages': load('/tmp/pages.json'),
-              'latest_build': load('/tmp/latest-build.json'),
-              'public_page_q': 'ISO page. q' in public,
-              'public_page_n': 'ISO page. n' in public,
-              'public_page_p': 'ISO page. p' in public,
-              'public_excerpt': public[-1000:],
-          }
-          Path('diagnostics/website-pages.json').write_text(json.dumps(result, indent=2) + '\n')
+          result = json.loads(Path('diagnostics/gorics-q-verification.json').read_text())
           print(json.dumps(result, indent=2))
+          if not result.get('success'):
+              raise SystemExit('GORICS q GUI verification failed')
           PY
-          git config user.name github-actions
-          git config user.email github-actions@github.com
-          git add diagnostics/website-pages.json
-          git commit -m 'Record Website Pages status' || true
-          git push
