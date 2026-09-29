@@ -1,0 +1,54 @@
+name: Fly Evolution 300 Billion Years
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - chatgpt-fly-evolution-300b
+    paths:
+      - 'fly-evolution-300b/**'
+      - '.github/workflows/fly-evolution-300b.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  simulate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install dependency
+        run: python -m pip install --disable-pip-version-check numpy
+      - name: Run 6-billion / 300-billion-year simulation
+        run: |
+          python fly-evolution-300b/simulate.py \
+            --lineages 4096 \
+            --out results/fly-evolution-300b \
+            | tee results.log
+      - name: Verify exact requested conditions
+        run: |
+          python - <<'PY'
+          import json
+          d=json.load(open('results/fly-evolution-300b/report.json'))
+          assert d['config']['initial_population'] == 6_000_000_000.0
+          assert d['config']['years'] == 300_000_000_000.0
+          assert d['config']['steps'] == 6000
+          assert d['final']['year'] == 300_000_000_000.0
+          assert all(x['predator_pressure'] == 0.0 for x in d['history'])
+          print('FULL_HORIZON_OK=1')
+          print('PREDATOR_FREE_OK=1')
+          print(json.dumps(d['final'], indent=2))
+          PY
+      - name: Upload evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: fly-evolution-300b-results
+          path: |
+            results/fly-evolution-300b/
+            results.log
+          if-no-files-found: error
+          retention-days: 30
