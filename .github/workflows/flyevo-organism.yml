@@ -1,0 +1,52 @@
+name: FlyEvo organism run
+on:
+  push:
+    branches: [fly-evo-organism]
+    paths:
+      - 'flyevo/**'
+      - '.github/workflows/flyevo-organism.yml'
+  workflow_dispatch:
+
+jobs:
+  evolve-and-fuse:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Structural neuroevolution
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy
+          python flyevo/runner.py
+      - name: Open-source LLM + Stable Diffusion fusion
+        continue-on-error: true
+        run: |
+          pip install --index-url https://download.pytorch.org/whl/cpu torch
+          pip install 'transformers>=4.40,<5' 'diffusers>=0.30' accelerate safetensors pillow
+          python flyevo/fusion.py | tee flyevo/results/fusion.log
+      - name: Full FlyWire whole-brain LIF smoke test
+        continue-on-error: true
+        run: |
+          pip install 'git+https://github.com/vshapenko/flypoke.git'
+          mkdir -p flyevo/flywire-data
+          export FLYPOKE_DATA="$PWD/flyevo/flywire-data"
+          flypoke download
+          flypoke poke --stim 'cell_sub_class=sugar/water' --rate 120 --trials 1 --t-run 50 --top 8 --min-syn 5 --out flyevo/results/flywire_rates.csv --watch 'cell_sub_class=ingestion_motor_neuron' | tee flyevo/results/flywire.log
+      - name: Run manifest
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json, subprocess, time
+          p=Path('flyevo/results')
+          m={'utc':time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()),'commit':subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),'files':sorted(x.name for x in p.glob('*'))}
+          (p/'run_manifest.json').write_text(json.dumps(m,indent=2),encoding='utf-8')
+          print(json.dumps(m,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flyevo-results
+          path: flyevo/results/
+          if-no-files-found: error
