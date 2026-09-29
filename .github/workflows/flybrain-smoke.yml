@@ -1,0 +1,16 @@
+name: FlyBrain Public Smoke
+
+on:
+  push:
+    branches: [flybrain-evo-public-run]
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          echo "runner-ok"
+          python --version
+          free -h
