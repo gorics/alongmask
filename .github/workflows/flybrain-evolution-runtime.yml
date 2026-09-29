@@ -1,0 +1,39 @@
+name: FlyBrain Evolution Runtime
+
+on:
+  push:
+    branches: [flybrain-evolution-runtime]
+    paths:
+      - 'experiments/evofly/**'
+      - '.github/workflows/flybrain-evolution-runtime.yml'
+  workflow_dispatch:
+
+jobs:
+  real-organs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Clone FlyBrain upstream
+        run: git clone --depth 1 https://github.com/snedea/flybrain.git flybrain-upstream
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install CPU runtime
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install 'transformers>=4.51' 'diffusers>=0.35' accelerate sentencepiece protobuf safetensors pillow
+      - name: Run unified Qwen + Stable Diffusion organs
+        env:
+          FLYBRAIN_DIR: flybrain-upstream
+          HF_HUB_DISABLE_TELEMETRY: '1'
+        run: python experiments/evofly/real_organs_demo.py
+      - name: Upload runtime evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: flybrain-real-organs
+          path: experiments/evofly/action-results/
+          if-no-files-found: warn
