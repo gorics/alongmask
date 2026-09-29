@@ -32,17 +32,17 @@ jobs:
           python -m pip install --no-cache-dir numpy pillow
           python -m pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
           python -m pip install --no-cache-dir 'transformers>=4.48,<5' 'diffusers>=0.32,<1' accelerate safetensors sentencepiece
-      - name: Execute integrated model
+      - name: Execute integrated model quality pass
         env:
           HF_HUB_DISABLE_TELEMETRY: '1'
           TOKENIZERS_PARALLELISM: 'false'
         run: |
-          python flybrain_open_models/flybrain_ai_integration.py \
+          python flybrain_open_models/flybrain_ai_integration_v2.py \
             --flybrain-dir external/flybrain \
             --out artifacts/flybrain_open_models \
-            --llm HuggingFaceTB/SmolLM2-360M-Instruct \
-            --sd segmind/tiny-sd \
-            --sd-steps 6 | tee integration.log
+            --llm Qwen/Qwen2.5-0.5B-Instruct \
+            --sd stable-diffusion-v1-5/stable-diffusion-v1-5 \
+            --sd-steps 10 | tee integration.log
       - name: Print outputs
         if: always()
         run: |
@@ -53,7 +53,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: flybrain-open-model-results
+          name: flybrain-open-model-results-v2
           path: |
             artifacts/flybrain_open_models/**
             flybrain_commit.txt
