@@ -30,6 +30,9 @@ jobs:
         run: |
           pip install scipy
           python flyevo/full_connectome.py | tee flyevo/results/full_connectome.log
+      - name: Evolve topology on the full 139k-node connectome
+        run: |
+          python flyevo/full_connectome_evolve.py | tee flyevo/results/full_connectome_evolution.log
       - name: Run manifest
         run: |
           python - <<'PY'
