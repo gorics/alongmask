@@ -22,7 +22,6 @@ jobs:
           pip install numpy
           python flyevo/runner.py
       - name: Open-source LLM + Stable Diffusion fusion
-        continue-on-error: true
         run: |
           pip install --index-url https://download.pytorch.org/whl/cpu torch
           pip install 'transformers>=4.40,<5' 'diffusers>=0.30' accelerate safetensors pillow
