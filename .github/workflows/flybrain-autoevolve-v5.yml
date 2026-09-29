@@ -1,0 +1,30 @@
+name: FlyBrain Structural Evolution V5
+on:
+  push:
+    branches: [flybrain-autoevolve-v5]
+  workflow_dispatch:
+jobs:
+  evolve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Clone FlyBrain
+        run: |
+          mkdir -p external
+          git clone --depth 1 https://github.com/snedea/flybrain.git external/flybrain
+          node external/flybrain/tests/run-node.js
+      - name: Install numpy
+        run: pip install numpy
+      - name: Run bounded structural neuroevolution
+        run: python flybrain_open_models/autoevolve_v5.py --connectome external/flybrain/data/connectome.bin.gz --out artifacts/v5 --generations 12 --population 10 | tee evolution.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: flybrain-structural-v5
+          path: |
+            artifacts/**
+            evolution.log
