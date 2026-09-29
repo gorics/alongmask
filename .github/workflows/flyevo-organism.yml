@@ -27,14 +27,10 @@ jobs:
           pip install --index-url https://download.pytorch.org/whl/cpu torch
           pip install 'transformers>=4.40,<5' 'diffusers>=0.30' accelerate safetensors pillow
           python flyevo/fusion.py | tee flyevo/results/fusion.log
-      - name: Full FlyWire whole-brain LIF smoke test
-        continue-on-error: true
+      - name: Fast full packaged FlyWire connectome LIF run
         run: |
-          pip install 'git+https://github.com/vshapenko/flypoke.git'
-          mkdir -p flyevo/flywire-data
-          export FLYPOKE_DATA="$PWD/flyevo/flywire-data"
-          flypoke download
-          flypoke poke --stim 'cell_sub_class=sugar/water' --rate 120 --trials 1 --t-run 50 --top 8 --min-syn 5 --out flyevo/results/flywire_rates.csv --watch 'cell_sub_class=ingestion_motor_neuron' | tee flyevo/results/flywire.log
+          pip install scipy
+          python flyevo/full_connectome.py | tee flyevo/results/full_connectome.log
       - name: Run manifest
         run: |
           python - <<'PY'
