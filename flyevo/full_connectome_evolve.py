@@ -19,7 +19,10 @@ nodes=np.frombuffer(raw,dtype=node_dtype,count=n,offset=off)
 pre=edges['pre'].astype(np.int64); post=edges['post'].astype(np.int64); ew=edges['w'].astype(np.float32)
 W=sp.csr_matrix((ew,(pre,post)),shape=(n,n),dtype=np.float32); W.sum_duplicates()
 sens=np.flatnonzero(nodes['region']==0); central=np.flatnonzero(nodes['region']==1); motor=np.flatnonzero(nodes['region']==3)
-print(f'full graph: n={n}, e={e}, sensory={len(sens)}, central={len(central)}, motor={len(motor)}')
+# Fixed sensory population is shared by mutation and evaluation, so a new edge can actually be selected for its phenotype.
+stim_rng=np.random.default_rng(4401)
+STIM_POOL=np.sort(stim_rng.choice(sens,min(512,len(sens)),replace=False).astype(np.int64))
+print(f'full graph: n={n}, e={e}, sensory={len(sens)}, central={len(central)}, motor={len(motor)}, stim_pool={len(STIM_POOL)}')
 
 @dataclass
 class Patch:
@@ -36,23 +39,31 @@ class Patch:
         return Patch(self.add_pre.copy(),self.add_post.copy(),self.add_w.copy(),self.del_idx.copy(),self.mutation_rate)
     def mutate(self,rng):
         q=self.clone()
-        # structural births: new long-range edges become part of this full-brain individual
-        births=max(1,int(rng.poisson(3)))
-        src_pool=np.concatenate([sens,central])
-        dst_pool=np.concatenate([central,motor])
-        q.add_pre=np.concatenate([q.add_pre,rng.choice(src_pool,births).astype(np.int64)])
-        q.add_post=np.concatenate([q.add_post,rng.choice(dst_pool,births).astype(np.int64)])
-        q.add_w=np.concatenate([q.add_w,rng.normal(18,8,births).clip(-30,35).astype(np.float32)])
-        # structural deaths: remove real base-connectome edges in this individual's graph
+        # Structural births. Sources are neurons that truly receive sensory drive.
+        births=max(2,int(rng.poisson(4)))
+        new_pre=rng.choice(STIM_POOL,births,replace=True).astype(np.int64)
+        # Half of births are explicitly allowed to reach the real 76-neuron motor region;
+        # the remainder alter central-brain topology. The operator is biased, selection still decides survival.
+        to_motor=rng.random(births)<0.55
+        new_post=np.empty(births,np.int64)
+        nm=int(to_motor.sum())
+        if nm: new_post[to_motor]=rng.choice(motor,nm,replace=True)
+        if births-nm: new_post[~to_motor]=rng.choice(central,births-nm,replace=True)
+        # Base FlyWire-derived weights span roughly -2405..1897, so these are in-range structural synapses.
+        new_w=rng.normal(850,260,births).clip(180,1600).astype(np.float32)
+        q.add_pre=np.concatenate([q.add_pre,new_pre])
+        q.add_post=np.concatenate([q.add_post,new_post])
+        q.add_w=np.concatenate([q.add_w,new_w])
+        # Structural deaths remove actual base-connectome edges for this individual.
         deaths=max(1,int(rng.poisson(2)))
         q.del_idx=np.unique(np.concatenate([q.del_idx,rng.integers(0,e,deaths,dtype=np.int64)]))
-        # point mutations of added synaptic strengths
+        # Point mutation on born synapses.
         if len(q.add_w):
-            m=rng.random(len(q.add_w))<0.35
-            q.add_w[m]+=rng.normal(0,5,m.sum()).astype(np.float32)
-            q.add_w=np.clip(q.add_w,-40,40)
-        # occasional deletion of a newly born edge
-        if len(q.add_w)>2 and rng.random()<0.4:
+            m=rng.random(len(q.add_w))<0.40
+            q.add_w[m]+=rng.normal(0,100,m.sum()).astype(np.float32)
+            q.add_w=np.clip(q.add_w,-1800,1800)
+        # Occasional loss of a previously born edge.
+        if len(q.add_w)>3 and rng.random()<0.35:
             keep=np.ones(len(q.add_w),bool); keep[int(rng.integers(0,len(q.add_w)))]=False
             q.add_pre,q.add_post,q.add_w=q.add_pre[keep],q.add_post[keep],q.add_w[keep]
         q.mutation_rate=float(np.clip(q.mutation_rate+rng.normal(0,.01),.02,.3))
@@ -67,31 +78,40 @@ def patch_matrix(g:Patch):
         ii=g.del_idx
         pp.extend(pre[ii].tolist()); qq.extend(post[ii].tolist()); ww.extend((-ew[ii]).tolist())
     if not ww: return None
-    P=sp.csr_matrix((np.asarray(ww,np.float32),(np.asarray(pp),np.asarray(qq))),shape=(n,n),dtype=np.float32); P.sum_duplicates(); return P
+    P=sp.csr_matrix((np.asarray(ww,np.float32),(np.asarray(pp),np.asarray(qq))),shape=(n,n),dtype=np.float32)
+    P.sum_duplicates(); return P
 
 
-def simulate(g:Patch,seed:int,steps=140):
+def simulate(g:Patch,seed:int,steps=260):
     rng=np.random.default_rng(seed); P=patch_matrix(g)
-    stim=rng.choice(sens,min(384,len(sens)),replace=False)
+    stim=STIM_POOL
     v=np.full(n,-52.,np.float32); conduct=np.zeros(n,np.float32); refr=np.zeros(n,np.int32); prev=np.empty(0,np.int64)
-    rest=-52.; reset=-52.; th=-45.; dt=.1; md=np.float32(np.exp(-dt/20)); sd=np.float32(np.exp(-dt/5)); gain=np.float32(1-md); wscale=np.float32(.275)
-    motor_sp=0; internal=0; all_sp=0
+    rest=-52.; reset=-52.; th=-45.; dt=.1
+    md=np.float32(np.exp(-dt/20)); sd=np.float32(np.exp(-dt/5)); gain=np.float32(1-md); wscale=np.float32(.275)
+    motor_sp=0; internal=0; all_sp=0; unique_motor=set()
     for step in range(steps):
         if prev.size:
             cur=np.asarray(W[prev].sum(axis=0)).ravel().astype(np.float32)
             if P is not None: cur+=np.asarray(P[prev].sum(axis=0)).ravel().astype(np.float32)
             conduct+=cur*wscale
-        active=refr<=step; v=np.where(active,rest+(v-rest)*md+conduct*gain,v); conduct*=sd
+        active=refr<=step
+        v=np.where(active,rest+(v-rest)*md+conduct*gain,v); conduct*=sd
         fired=np.flatnonzero((v>th)&active)
-        ext=stim[rng.random(len(stim))<(130*dt/1000)]
+        ext=stim[rng.random(len(stim))<(150*dt/1000)]
         spk=np.unique(np.concatenate([fired,ext])).astype(np.int64)
         if spk.size: v[spk]=reset; conduct[spk]=0; refr[spk]=step+22
-        motor_sp+=int(np.isin(fired,motor,assume_unique=False).sum())
+        mf=np.intersect1d(fired,motor,assume_unique=True)
+        motor_sp+=int(mf.size); unique_motor.update(map(int,mf))
         internal+=int(fired.size); all_sp+=int(spk.size); prev=spk
     complexity=len(g.add_w)+len(g.del_idx)
-    # selection pressure: propagate sensory activity into actual motor-region neurons without global runaway firing
-    fitness=4.0*motor_sp + .0015*internal - .0005*all_sp - .025*complexity
-    return float(fitness),{'motor_spikes':motor_sp,'internal_spikes':internal,'all_spikes':all_sp,'added_edges':len(g.add_w),'deleted_edges':len(g.del_idx)}
+    # Reward actual propagation into motor-region neurons, breadth of motor recruitment, and moderate internal propagation.
+    # Penalize runaway global firing and unnecessary wiring.
+    fitness=8.0*motor_sp + 3.0*len(unique_motor) + .0008*internal - .00035*all_sp - .012*complexity
+    return float(fitness),{
+        'motor_spikes':motor_sp,'unique_motor_neurons':len(unique_motor),
+        'internal_spikes':internal,'all_spikes':all_sp,
+        'added_edges':len(g.add_w),'deleted_edges':len(g.del_idx)
+    }
 
 
 def evaluate(g):
@@ -101,10 +121,11 @@ def evaluate(g):
     return float(np.mean(vals)),details
 
 rng=np.random.default_rng(20260929)
+# Keep an unmodified control, but force the rest of generation 0 to express structural variants.
 pop=[Patch.empty()]
-while len(pop)<8: pop.append(Patch.empty().mutate(rng))
+while len(pop)<10: pop.append(Patch.empty().mutate(rng))
 hist=[]
-for gen in range(8):
+for gen in range(10):
     scored=[]
     for g in pop:
         f,d=evaluate(g); scored.append((f,g,d))
@@ -114,20 +135,22 @@ for gen in range(8):
     hist.append(row); print(json.dumps(row))
     elite=[x[1] for x in scored[:3]]
     pop=[elite[0].clone(),elite[1].clone()]
-    while len(pop)<8: pop.append(elite[int(rng.integers(0,len(elite)))].mutate(rng))
+    while len(pop)<10: pop.append(elite[int(rng.integers(0,len(elite)))].mutate(rng))
 
 scored=[]
 for g in pop:
     f,d=evaluate(g); scored.append((f,g,d))
 scored.sort(key=lambda x:x[0],reverse=True); final_f,best,final_d=scored[0]
+control_f,control_d=evaluate(Patch.empty())
 report={
- 'neurons':int(n),'base_edges':int(e),'generations':len(hist),'population':8,
+ 'neurons':int(n),'base_edges':int(e),'generations':len(hist),'population':10,
+ 'control_fitness':control_f,'control_trial_details':control_d,
  'start_best_fitness':hist[0]['best_fitness'],'last_recorded_best_fitness':hist[-1]['best_fitness'],'final_best_fitness':final_f,
  'best_added_edges':int(len(best.add_w)),'best_deleted_base_edges':int(len(best.del_idx)),
- 'added_edge_examples':[{'pre':int(a),'post':int(b),'weight':float(w)} for a,b,w in zip(best.add_pre[:12],best.add_post[:12],best.add_w[:12])],
- 'deleted_edge_examples':[{'edge_index':int(i),'pre':int(pre[i]),'post':int(post[i]),'weight_removed':float(ew[i])} for i in best.del_idx[:12]],
+ 'added_edge_examples':[{'pre':int(a),'post':int(b),'post_region':int(nodes['region'][b]),'weight':float(w)} for a,b,w in zip(best.add_pre[:16],best.add_post[:16],best.add_w[:16])],
+ 'deleted_edge_examples':[{'edge_index':int(i),'pre':int(pre[i]),'post':int(post[i]),'weight_removed':float(ew[i])} for i in best.del_idx[:16]],
  'final_trial_details':final_d,'history':hist,
- 'claim_boundary':'The underlying full 139k-node graph is retained, while each evolutionary individual has real structural edge births/deaths applied as a sparse patch during propagation. This proves graph topology evolution on the full connectome model; it does not prove unbounded intelligence.'
+ 'claim_boundary':'Each individual keeps the full 139,255-node FlyWire-derived graph and applies heritable edge births/deaths during propagation. A nonzero winning patch is evidence that this run selected a changed topology; it is not evidence of consciousness or unbounded intelligence.'
 }
 (OUT/'full_connectome_evolution.json').write_text(json.dumps(report,indent=2),encoding='utf-8')
 np.savez_compressed(OUT/'full_connectome_evolved_patch.npz',add_pre=best.add_pre,add_post=best.add_post,add_w=best.add_w,del_idx=best.del_idx)
