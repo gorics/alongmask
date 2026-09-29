@@ -1,0 +1,66 @@
+name: FlyBrain Evolution V4 Quality
+
+on:
+  push:
+    branches: [flybrain-evolution-v3]
+    paths:
+      - 'flybrain_open_models/flybrain_evolution_v4.py'
+      - '.github/workflows/flybrain-evolution-v4.yml'
+  workflow_dispatch:
+
+jobs:
+  evolve-quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      HF_HUB_DISABLE_TELEMETRY: '1'
+      HF_HUB_DISABLE_XET: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Clone and verify FlyBrain
+        run: |
+          mkdir -p external
+          git clone --depth 1 https://github.com/snedea/flybrain.git external/flybrain
+          git -C external/flybrain rev-parse HEAD | tee flybrain_commit.txt
+          node external/flybrain/tests/run-node.js | tee flybrain_tests.log
+      - name: Install CPU AI stack
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --no-cache-dir numpy pillow
+          python -m pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install --no-cache-dir 'transformers>=4.48,<5' 'diffusers>=0.32,<1' accelerate safetensors sentencepiece
+      - name: Run recursive quality evolution V4
+        run: |
+          python flybrain_open_models/flybrain_evolution_v4.py \
+            --flybrain-dir external/flybrain \
+            --out artifacts/flybrain_evolution_v4 | tee evolution_v4.log
+      - name: Checksums
+        if: always()
+        run: |
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          root=Path('artifacts/flybrain_evolution_v4'); root.mkdir(parents=True,exist_ok=True); d={}
+          for p in sorted(root.glob('*')):
+              if p.is_file(): d[p.name]=hashlib.sha256(p.read_bytes()).hexdigest()
+          (root/'SHA256SUMS.json').write_text(json.dumps(d,indent=2)); print(json.dumps(d,indent=2))
+          PY
+      - name: Upload actual V4 outputs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: flybrain-evolution-v4-results
+          path: |
+            artifacts/flybrain_evolution_v4/**
+            flybrain_commit.txt
+            flybrain_tests.log
+            evolution_v4.log
+          if-no-files-found: warn
+          retention-days: 30
