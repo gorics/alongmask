@@ -1,0 +1,63 @@
+name: FlyBrain Open Models Integration
+
+on:
+  push:
+    branches: [flybrain-open-model-integration]
+    paths:
+      - 'flybrain_open_models/**'
+      - '.github/workflows/flybrain-open-model-integration.yml'
+  workflow_dispatch:
+
+jobs:
+  integrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Clone open-source FlyBrain
+        run: |
+          mkdir -p external
+          git clone --depth 1 https://github.com/snedea/flybrain.git external/flybrain
+          git -C external/flybrain rev-parse HEAD | tee flybrain_commit.txt
+      - name: Verify FlyBrain tests
+        run: node external/flybrain/tests/run-node.js | tee flybrain_tests.log
+      - name: Install model runtime
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --no-cache-dir numpy pillow
+          python -m pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install --no-cache-dir 'transformers>=4.48,<5' 'diffusers>=0.32,<1' accelerate safetensors sentencepiece
+      - name: Execute integrated model
+        env:
+          HF_HUB_DISABLE_TELEMETRY: '1'
+          TOKENIZERS_PARALLELISM: 'false'
+        run: |
+          python flybrain_open_models/flybrain_ai_integration.py \
+            --flybrain-dir external/flybrain \
+            --out artifacts/flybrain_open_models \
+            --llm HuggingFaceTB/SmolLM2-360M-Instruct \
+            --sd segmind/tiny-sd \
+            --sd-steps 6 | tee integration.log
+      - name: Print outputs
+        if: always()
+        run: |
+          tail -n 5 flybrain_tests.log || true
+          cat artifacts/flybrain_open_models/result.json || true
+          find artifacts/flybrain_open_models -maxdepth 1 -type f -printf '%f %s bytes\n' || true
+      - name: Upload actual outputs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: flybrain-open-model-results
+          path: |
+            artifacts/flybrain_open_models/**
+            flybrain_commit.txt
+            flybrain_tests.log
+            integration.log
+          if-no-files-found: warn
+          retention-days: 7
